@@ -44,6 +44,14 @@ def _actions_getter(machine: "MachineRef"):
 
         def getter(grouper):
             all_names = set(dir(machine))
+            scope = machine._callback_scopes.get(id(grouper.list))
+            if scope is not None:
+                body = scope[1]
+                all_names.update(body)
+                for value in body.values():
+                    attr_name = getattr(value, "attr_name", None)
+                    if attr_name:
+                        all_names.add(attr_name)
             return ", ".join(str(c) for c in grouper if not c.is_convention or c.func in all_names)
 
     return getter
