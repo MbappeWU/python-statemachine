@@ -298,17 +298,47 @@ class StateChart(Generic[TModel], metaclass=StateMachineMetaclass):
                     continue
                 setattr(target, event, trigger)
 
-    def _add_listener(self, listeners: "Listeners", allowed_references: SpecReference = SPECS_ALL):
+    def _add_listener(
+        self,
+        listeners: "Listeners",
+        allowed_references: SpecReference = SPECS_ALL,
+        include_body_scopes: bool = False,
+    ):
         registry = self._callbacks
         listeners.resolve(self._specs, registry=registry, allowed_references=allowed_references)
         for visited in iterate_states_and_transitions(self.states):
-            listeners.resolve(
+            scoped = listeners
+            if include_body_scopes:
+                scope = self.__class__._callback_scopes.get(id(visited._specs))
+                if scope is not None:
+                    _, body = scope
+                    body = self._scope_members(body)
+                    scoped = Listeners.from_listeners(
+                        (
+                            Listener.from_obj(
+                                self,
+                                local_scope=body,
+                                scope_id=str(id(scope[0])),
+                            ),
+                            *listeners.items,
+                        )
+                    )
+            scoped.resolve(
                 visited._specs,
                 registry=registry,
                 allowed_references=allowed_references,
             )
 
         return self
+
+    @staticmethod
+    def _scope_members(body):
+        scope = dict(body)
+        for _name, value in body.items():
+            attr_name = getattr(value, "attr_name", None)
+            if attr_name:
+                scope.setdefault(attr_name, value)
+        return scope
 
     def _register_callbacks(self, listeners: list[object]):
         self._listeners.update({id(listener): listener for listener in listeners})
@@ -319,7 +349,8 @@ class StateChart(Generic[TModel], metaclass=StateMachineMetaclass):
                     Listener.from_obj(self.model, skip_attrs={self.state_field}),
                     *(Listener.from_obj(listener) for listener in listeners),
                 )
-            )
+            ),
+            include_body_scopes=True,
         )
 
         check_callbacks = self._callbacks.check
@@ -356,6 +387,7 @@ class StateChart(Generic[TModel], metaclass=StateMachineMetaclass):
         return self._add_listener(
             Listeners.from_listeners(Listener.from_obj(listener) for listener in listeners),
             allowed_references=SPECS_SAFE,
+            include_body_scopes=False,
         )
 
     def _repr_html_(self):

@@ -73,6 +73,21 @@ Within a single macrostep, the engine repeats:
 After the macrostep completes, the engine picks the next event from the
 **external queue** (placed by `send()`) and starts a new macrostep.
 
+## Callback lookup in nested state bodies
+
+Callbacks declared inside `State.Compound` and `State.Parallel` bodies are
+bound when the owning `StateChart` is assembled, but resolved against the real
+machine instance when an event is processed. This preserves dynamic model and
+property values and keeps synchronous and asynchronous callbacks on their
+normal engine paths.
+
+When more than one listener supplies the same callback name, lookup follows
+the existing order: the machine method, model, class listeners, then runtime
+listeners. A callback declared in a nested body is scoped to its owning state,
+so sibling regions can use the same name without replacing each other's
+handler. Inherited state-chart classes reuse the declaration without consuming
+it from the base or another subclass.
+
 
 ### Event queues
 

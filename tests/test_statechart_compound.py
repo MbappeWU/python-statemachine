@@ -425,8 +425,8 @@ class TestEventClassInsideCompound:
         await sm_runner.send(sm, "victory")
         assert {"war", "quest", "end", "battle", "won"} == set(sm.configuration_values)
 
-    def test_transition_less_event_declares_nothing(self):
-        """A nested ``Event`` carries only its id, so with no transitions it is dropped."""
+    def test_transition_less_event_registers_catalog_and_alias(self):
+        """A nested transition-less ``Event`` keeps its public identity and metadata."""
 
         class Placeholder(StateChart):
             class shire(State.Compound):
@@ -434,10 +434,13 @@ class TestEventClassInsideCompound:
                 green_dragon = State(final=True)
 
                 visit_pub = bag_end.to(green_dragon)
-                knock = Event(name="Knock on the door")
+                knock = Event(name="Knock on the door", delay=25, internal=True)
 
-        assert [event.id for event in Placeholder.events] == ["visit_pub"]
-        assert not hasattr(Placeholder, "knock")
+        assert {event.id for event in Placeholder.events} == {"visit_pub", "knock"}
+        assert Placeholder.knock.id == "knock"
+        assert Placeholder.knock.name == "Knock on the door"
+        assert Placeholder.knock.delay == 25
+        assert Placeholder.knock.internal is True
 
 
 @pytest.mark.timeout(5)

@@ -1,3 +1,4 @@
+import builtins
 import re
 from typing import Any
 
@@ -9,7 +10,6 @@ from .event import Event
 from .event import _expand_event_id
 from .exceptions import InvalidDefinition
 from .graph import disconnected_states
-from .graph import iterate_states
 from .graph import iterate_states_and_transitions
 from .graph import states_without_path_to_final_states
 from .i18n import _
@@ -52,6 +52,7 @@ class StateMachineMetaclass(type):
         cls._events: dict[Event, None] = {}  # used Dict to preserve order and avoid duplicates
         cls._protected_attrs: set = set()
         cls._events_to_update: dict[Event, Event | None] = {}
+        cls._callback_scopes: dict[int, tuple[State, dict[str, Any]]] = {}
         cls._specs = CallbackSpecList()
         cls.prepare = cls._specs.grouper(CallbackGroup.PREPARE).add(
             "prepare_event", priority=CallbackPriority.GENERIC, is_convention=True
@@ -164,13 +165,9 @@ class StateMachineMetaclass(type):
                 parent.to(state, initial=True)  # pragma: no cover
 
     def _unpack_builders_callbacks(cls):
-        callbacks = {}
-        for state in iterate_states(cls.states):
-            if state._callbacks:
-                callbacks.update(state._callbacks)
-                del state._callbacks
-        for key, value in callbacks.items():
-            setattr(cls, key, value)
+        # Kept as a compatibility no-op.  Nested callback bodies are retained on
+        # their State and resolved through the scoped machine listener.
+        return None
 
     def _check(cls):
         has_states = bool(cls.states)
@@ -304,27 +301,10 @@ class StateMachineMetaclass(type):
                 cls._add_states_from_dict(value)
             if isinstance(value, State):
                 cls.add_state(key, value)
-            elif isinstance(value, (Transition, TransitionList)):
-                event_id = _expand_event_id(key)
-                cls.add_event(event=Event(transitions=value, id=event_id))
-            elif isinstance(value, (Event,)):
-                if value._has_real_id:
-                    event_id = value.id
-                else:
-                    event_id = _expand_event_id(key)
-                new_event = Event(
-                    transitions=value._transitions,
-                    id=event_id,
-                    name=value.name,
-                    delay=value.delay,
-                    internal=value.internal,
-                )
-                cls.add_event(event=new_event, old_event=value)
-                # Ensure the event is accessible by the Python attribute name
-                if event_id != key:
-                    setattr(cls, key, new_event)
+            elif isinstance(value, (Transition, TransitionList, Event)):
+                cls._read_body({key: value})
             elif getattr(value, "attr_name", None):
-                cls._add_unbounded_callback(key, value)
+                cls._read_body({key: value})
 
     def _add_states_from_dict(cls, states):
         for state_id, state in states.items():
@@ -346,12 +326,76 @@ class StateMachineMetaclass(type):
             if not hasattr(cls, id):
                 setattr(cls, id, state)
 
+        cls._read_body(state._body, owner=state)
+        body_owner = state
+        while not body_owner._body and body_owner.parent is not None:
+            body_owner = body_owner.parent
+        cls._callback_scopes[builtins.id(state._specs)] = (body_owner, body_owner._body)
+
         # also register all events associated directly with transitions
         for event in state.transitions.unique_events:
             cls.add_event(event)
 
+        for transition in state.transitions:
+            cls._callback_scopes[builtins.id(transition._specs)] = (body_owner, body_owner._body)
+
         for substate in state.states:
             cls.add_state(substate.id, substate)
+
+    def _read_body(cls, body, owner=None):  # noqa: C901
+        """Read behavioural declarations with an optional owning State."""
+        if not body:
+            return
+        for key, value in body.items():
+            if key.startswith("__"):
+                continue
+            # Structural declarations were consumed by NestedStateFactory.
+            if isinstance(value, (States, State)):
+                continue
+            if isinstance(value, TransitionList):
+                event_id = _expand_event_id(key)
+                if owner is None:
+                    cls.add_event(event=Event(transitions=value, id=event_id))
+                else:
+                    value.add_event(event_id)
+                continue
+            if isinstance(value, Transition):
+                event_id = _expand_event_id(key)
+                if owner is None:
+                    cls.add_event(event=Event(transitions=value, id=event_id))
+                else:
+                    value.add_event(event_id)
+                continue
+            if isinstance(value, Event):
+                event_id = value.id if value._has_real_id else _expand_event_id(key)
+                new_event = Event(
+                    transitions=value._transitions,
+                    id=event_id,
+                    name=value.name,
+                    delay=value.delay,
+                    internal=value.internal,
+                )
+                if owner is None or value._transitions is None:
+                    cls.add_event(event=new_event, old_event=value)
+                else:
+                    value._transitions._on_event_defined(
+                        event=new_event,
+                        states=list(cls.states),
+                    )
+                if event_id != key:
+                    setattr(cls, key, new_event)
+                continue
+            if getattr(value, "attr_name", None):
+                if value.is_event and value._transitions is not None:
+                    value._transitions.add_event(key)
+                    cls.add_event(event=Event(value._transitions, id=key))
+                # Event-decorator callbacks need their private callable name on
+                # the class; ordinary local callbacks stay in the owner scope.
+                if owner is None:
+                    cls._add_unbounded_callback(key, value)
+                continue
+            if callable(value) and owner is None:
+                cls._add_unbounded_callback(key, value)
 
     def add_event(
         cls,

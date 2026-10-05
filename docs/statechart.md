@@ -239,6 +239,18 @@ True
 Use `is_terminated` instead of checking individual states — it handles
 arbitrarily nested structures for you.
 
+Nested state bodies support the same declaration forms as a top-level
+`StateChart`: `State`, `States.from_enum()`, transitions and transition lists,
+`Event`, decorated event callbacks, and ordinary callback methods. The nested
+body may be a `State.Compound` or a `State.Parallel`; each parallel region
+keeps its callbacks associated with its own owning state, so equal method names
+in sibling regions do not overwrite one another.
+
+An explicit event ID and the Python attribute name are separate identities. Both
+remain available when they differ, and an event with no transitions is still
+listed in `StateChart.events` with its display name, delay, and `internal`
+metadata.
+
 **`final_states`** lists all top-level states marked as `final`:
 
 ```py

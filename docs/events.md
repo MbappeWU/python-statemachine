@@ -353,6 +353,13 @@ True
 
 ```
 
+The same event declaration rules apply inside each compound or parallel body.
+An explicit `id` does not replace the Python attribute: both names can be used
+to refer to the event. A transition-less `Event` is also retained in the
+machine event catalog, including its `name`, `delay`, and `internal` metadata.
+Callback methods declared in sibling regions are resolved in their owning
+state's scope, so equal method names do not use last-writer-wins lookup.
+
 (donedata)=
 
 #### DoneData

@@ -8,8 +8,6 @@ from weakref import ref
 from .callbacks import CallbackGroup
 from .callbacks import CallbackPriority
 from .callbacks import CallbackSpecList
-from .event import Event
-from .event import _expand_event_id
 from .exceptions import InvalidDefinition
 from .i18n import _
 from .invoke import normalize_invoke_callbacks
@@ -76,7 +74,10 @@ class NestedStateFactory(type):
 
         states = []
         history = []
-        callbacks = {}
+        # Keep the complete body for the owning state-machine metaclass.  Nested
+        # construction is deliberately structural; behavioural declarations are
+        # consumed later with the real owner state available.
+        body = dict(attrs)
         # Order is significant: a ``HistoryState`` is a ``State``, and an ``Event`` is a
         # callable ``str``, so both would be captured by a later branch.
         for key, value in attrs.items():
@@ -90,29 +91,8 @@ class NestedStateFactory(type):
             elif isinstance(value, State):
                 value._set_id(key)
                 states.append(value)
-            elif isinstance(value, TransitionList):
-                value.add_event(_expand_event_id(key))
-            elif isinstance(value, Event):
-                if value._transitions is not None:
-                    event_id = value.id if value._has_real_id else _expand_event_id(key)
-                    value._transitions.add_event(
-                        Event(
-                            id=event_id,
-                            name=value.name,
-                            delay=value.delay,
-                            internal=value.internal,
-                        )
-                    )
-            elif getattr(value, "attr_name", None):
-                if value.is_event:
-                    value._transitions.add_event(key)
-                callbacks[value.attr_name] = value
-            elif callable(value):
-                callbacks[key] = value
 
-        return State(
-            name=name, states=states, history=history, _callbacks=callbacks, **inherited_kwargs
-        )
+        return State(name=name, states=states, history=history, _body=body, **inherited_kwargs)
 
     @classmethod
     def to(cls, *args: "State | NestedStateFactory", **kwargs) -> "_ToState":  # pragma: no cover
@@ -238,6 +218,7 @@ class State:
         invoke: Any = None,
         donedata: Any = None,
         _callbacks: Any = None,
+        _body: dict[str, Any] | None = None,
     ):
         self.name = name
         self.value = value
@@ -250,6 +231,7 @@ class State:
         self.is_active = False
         self._id: str = ""
         self._callbacks = _callbacks
+        self._body = _body or {}
         self.parent: "State | None" = None
         self.transitions = TransitionList()
         self._specs = CallbackSpecList()

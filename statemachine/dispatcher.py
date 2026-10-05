@@ -37,19 +37,39 @@ class Listener:
     obj: object
     all_attrs: set[str]
     resolver_id: str
+    local_scope: dict[str, Any] | None = None
+    scope_id: str | None = None
 
     @classmethod
-    def from_obj(cls, obj, skip_attrs=None) -> "Listener":
+    def from_obj(cls, obj, skip_attrs=None, local_scope=None, scope_id=None) -> "Listener":
         if isinstance(obj, Listener):
             return obj
         else:
             if skip_attrs is None:
                 skip_attrs = set()
             all_attrs = set(dir(obj)) - skip_attrs
-            return cls(obj, all_attrs, str(id(obj)))
+            if local_scope is not None:
+                all_attrs = set(local_scope)
+            return cls(obj, all_attrs, str(id(obj)), local_scope, scope_id)
 
     def build_key(self, attr_name) -> str:
-        return f"{attr_name}@{self.resolver_id}"
+        suffix = self.resolver_id
+        if self.scope_id is not None:
+            suffix = f"{suffix}:{self.scope_id}"
+        return f"{attr_name}@{suffix}"
+
+    def get(self, name):
+        if self.local_scope is None:
+            return getattr(self.obj, name)
+        value = self.local_scope[name]
+        if isinstance(value, property):
+            return value.__get__(self.obj, type(self.obj))
+        descriptor = getattr(type(self.obj), name, None)
+        if descriptor is value and hasattr(value, "__get__"):
+            return value.__get__(self.obj, type(self.obj))
+        if hasattr(value, "__get__") and callable(value):
+            return value.__get__(self.obj, type(self.obj))
+        return value
 
 
 @dataclass
@@ -149,11 +169,19 @@ class Listeners:
         if attr_name not in self.all_attrs:
             return
         for listener in self.items:
-            func = getattr(type(listener.obj), attr_name, None)
+            if listener.local_scope is not None:
+                func = listener.local_scope.get(attr_name)
+            else:
+                func = getattr(type(listener.obj), attr_name, None)
             if func is not None and func is spec.func:
+                builder = (
+                    partial(listener_attr_method, listener, attr_name)
+                    if listener.local_scope is not None
+                    else partial(attr_method, attr_name, listener.obj)
+                )
                 yield (
                     listener.build_key(attr_name),
-                    partial(attr_method, attr_name, listener.obj),
+                    builder,
                 )
                 return
 
@@ -162,7 +190,12 @@ class Listeners:
         # on the self
         if not spec.is_bounded:
             for listener in self.items:
-                func = getattr(listener.obj, spec.attr_name, None)
+                if listener.local_scope is not None:
+                    func = listener.local_scope.get(spec.attr_name)
+                    if func is not None and hasattr(func, "__get__"):
+                        func = func.__get__(listener.obj, type(listener.obj))
+                else:
+                    func = getattr(listener.obj, spec.attr_name, None)
                 # ``getattr`` may return a non-method that happens to share the name
                 # (e.g. a model attribute named like a compiled guard); it is not the
                 # unbounded method we are rebinding, so skip it instead of accessing
@@ -179,9 +212,12 @@ class Listeners:
                 continue
 
             key = listener.build_key(name)
-            func = getattr(listener.obj, name)
+            func = listener.get(name)
             if not callable(func):
-                yield key, partial(attr_method, name, listener.obj)
+                if listener.local_scope is not None:
+                    yield key, partial(listener_attr_method, listener, name)
+                else:
+                    yield key, partial(attr_method, name, listener.obj)
                 continue
 
             if isinstance(func, Event):
@@ -220,6 +256,16 @@ def attr_method(attribute, obj) -> Callable:
 
     def method(*args, **kwargs):
         return getter(obj)
+
+    method.__name__ = attribute
+    return method
+
+
+def listener_attr_method(listener: Listener, attribute: str) -> Callable:
+    """Read a listener member at invocation time, preserving scoped descriptors."""
+
+    def method(*args, **kwargs):
+        return listener.get(attribute)
 
     method.__name__ = attribute
     return method
